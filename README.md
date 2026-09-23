@@ -2,6 +2,8 @@
 
 This document explains the technical architecture, classification mechanisms, and biological rationale behind the **General Viral Gene Annotator** pipeline in [`jev sequence alignment.py`](jev%20sequence%20alignment.py).
 
+The abstract of this pipeline has been submitted for online oral presentation at "14th INTERNATIONAL NEW YORK CONFERENCE ON EVOLVING TRENDS  IN INTERDISCIPLINARY RESEARCH & PRACTICES, November 12-15, 2026. Manhattan, New York City. Website: https://www.nyconference.org/
+
 > **Note on naming:** The pipeline was originally developed for Japanese Encephalitis Virus (JEV) triage, and the JEV example is fully retained. It has since been generalised to annotate genes from any of five viral pathogens (JEV, SARS-CoV-2, H5N1, Poliovirus, HIV) and is now named the **General Viral Gene Annotator**.
 
 ---
