@@ -1,0 +1,10 @@
+# Versions installed when the checks last passed (Python 3.11.5, 2026-11-19).
+# Pipeline (API tiers; the k-mer tier and tests/test_pipeline.py need none of these)
+google-genai==1.75.0
+typesafe-sdk==0.7.1
+httpx==0.28.1
+# Manuscript and figure scripts (scripts/)
+python-docx==1.2.0
+lxml==4.9.3
+matplotlib==3.8.2
+numpy==1.26.4

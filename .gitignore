@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.claude/.cc-writes/
+.claude/settings.local.json
+# local backups and rebuild outputs
+*.backup-*.docx
+*-rebuilt.docx
+~$*.docx
+# generated knowledge graph (regenerate with /graphify)
+graphify-out/

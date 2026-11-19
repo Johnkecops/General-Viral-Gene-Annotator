@@ -1,0 +1,9 @@
+file,id,length,HIV-1,SARS-CoV-2,H5N1,PV,JEV
+jev-gp2-gene.fa,NC_001437.1:96-3691,3596,0.0,0.0,0.0,0.0,100.0
+sars-cov-2-orf1ab-gene.fna,NC_045512.2:266-21555,21290,0.0,100.0,0.0,0.0,0.0
+H5N1-NA-gene.fna,NC_007361.1:21-1430,1410,0.0,0.0,100.0,0.0,0.0
+Polio-PVgp1-gene.fna,NC_002058.3:743-7372,6630,0.0,0.0,0.0,100.0,0.0
+HIV-gag-pol-gene.fna,NC_001802.1:336-4642,4307,100.0,0.0,0.0,0.0,0.0
+gene.fasta,tralalalalalaallaalal,4307,100.0,0.0,0.0,0.0,0.0
+jev_samples.fasta,SAMPLE_01_AUST_GIII,112,0.0,0.0,0.0,0.0,0.0
+jev_samples.fasta,SAMPLE_02_AMBIGUOUS_RECOMBINANT,112,0.0,0.0,0.0,0.0,0.0

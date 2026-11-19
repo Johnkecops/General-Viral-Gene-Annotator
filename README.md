@@ -22,23 +22,24 @@ Instead, the pipeline relies on **parametric neural network knowledge** via a tw
 
 ```mermaid
 flowchart TD
-    A["Raw .fasta File (jev_samples.fasta)"] --> B["Native Multiline FASTA Parser (parse_fasta)"]
+    A["Raw .fasta File (path given on the command line)"] --> B["Native Multiline FASTA Parser (parse_fasta)"]
     B --> C["Structured Sequence Records: {id, sequence}"]
     
     subgraph S1 ["Tier 1: High-Throughput Screening"]
-        C --> D["Context Assembly (bio_state)"]
+        C --> C2["k-mer containment vs 5 local references (k = 15)"]
+        C2 --> D["Context Assembly (bio_state)"]
         D --> E["TypeSafe Jev System One Client"]
-        E --> F["Evaluate Noul: is_unambiguous_jev"]
+        E --> F["Evaluate Choice: viral_classification (5 viruses + none)"]
         F --> G["Compute Probability & Confidence: |p - 0.5| * 2"]
     end
     
     G --> H{"Confidence >= 85%?"}
     
-    H -- "Yes (Clear Decision)" --> I["Auto-Processed (is_jev = True / False)"]
+    H -- "Yes (Clear Decision)" --> I["Auto-Processed (class label)"]
     
     subgraph S2 ["Tier 2: Foundation Model Escalation"]
         H -- "No (Ambiguous Variant)" --> J["Escalate to Gemini 3.8 Flash (gemini_client)"]
-        J --> K["System Instruction: Flavivirus Genomics Expert"]
+        J --> K["System Instruction: Viral Genomics Expert"]
         K --> L["Deep Anomaly & Recombination Analysis"]
     end
     
@@ -115,7 +116,7 @@ The model was **94% confident in rejecting the sequences**, fulfilling the $\ge 
 
 ## 4. Tier 2: How Gemini 3.8 Flash Handles Ambiguous Sequences
 
-When a sequence falls into the uncertain zone ($\text{Confidence} < 85\%$, or $0.425 < p < 0.575$), the pipeline automatically triggers **Gemini 3.8 Flash**.
+When a sequence falls into the uncertain zone ($\text{Confidence} < 85\%$, or $0.075 < p < 0.925$ for a binary probability; versions of this README before 2026-11-19 gave $0.425 < p < 0.575$, which does not follow from the formula in section 3.3), the pipeline automatically triggers **Gemini 3.8 Flash**.
 
 ### 4.1 System Persona and Role Definition
 Gemini is initialized with domain-specific grounding:
@@ -202,7 +203,7 @@ For any downstream wet laboratory validation, experimental synthesis, assay desi
 The **General Viral Gene Annotator** is an asynchronous, two-tiered AI-driven pipeline that classifies raw FASTA genomic sequences against a panel of five high-priority viral pathogens. Although it originated as a Japanese Encephalitis Virus (JEV) triage tool — and the JEV example is fully retained — the annotator is designed to handle any gene from the following viruses:
 
 | Pathogen | Family | Reference Gene Used | Example Input File |
-| :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- |
 | Japanese Encephalitis Virus (JEV) ⭐ | Flaviviridae | gp2 polyprotein gene | `jev-gp2-gene.fa` / `jev_samples.fasta` |
 | SARS-CoV-2 | Coronaviridae | ORF1ab gene | `sars-cov-2-orf1ab-gene.fna` |
 | Influenza A H5N1 | Orthomyxoviridae | Neuraminidase (NA) gene | `H5N1-NA-gene.fna` |
@@ -252,6 +253,8 @@ jev-bioinformatics/
 
 ```bash
 pip install google-genai typesafe-sdk httpx
+# or, for the exact versions the checks were run with (also covers the manuscript scripts):
+pip install -r environments/requirements.txt
 ```
 
 | Package | Purpose |
@@ -269,43 +272,24 @@ This pipeline requires **two API keys**:
 
 #### 1. TypeSafe API Key (Required — Tier 1 Screening)
 
-The TypeSafe API key is used for the System One probabilistic viral classification model. Obtain your key from [TypeSafe](https://typesafe.ai) and set it directly in the script or as an environment variable:
+The TypeSafe API key is used for the System One probabilistic viral classification model. Obtain your key from [TypeSafe](https://typesafe.ai) and set it as an environment variable:
 
-**Option A — Hardcoded in script (current default):**
-```python
-typesafe_client = AsyncTypeSafeClient(
-    api_key="YOUR_TYPESAFE_API_KEY"
-)
-```
-
-**Option B — Environment variable (recommended for production):**
 ```bash
 export TYPESAFE_API_KEY="your_typesafe_api_key_here"
 ```
-Then update the script:
-```python
-typesafe_client = AsyncTypeSafeClient(
-    api_key=os.getenv("TYPESAFE_API_KEY")
-)
-```
+The script reads the key from the environment when it starts. Keys are never written into the source file. If the key is absent, the run still completes and reports the k-mer alignment profile only.
 
 #### 2. Gemini API Key (Required — Tier 2 Escalation)
 
 The Gemini API key powers the escalation path for ambiguous sequences. Obtain your key from [Google AI Studio](https://aistudio.google.com/apikey).
 
-**Option A — Environment variable (recommended):**
 ```bash
 export GEMINI_API_KEY="your_gemini_api_key_here"
 ```
-The `genai.Client()` constructor automatically reads `GEMINI_API_KEY` or `GOOGLE_API_KEY` from the environment.
-
-**Option B — Hardcoded in script:**
-```python
-gemini_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
-```
+The script accepts either `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
 > [!IMPORTANT]
-> Both API keys are **required** for full pipeline functionality. Without the TypeSafe key, Tier 1 screening will fail entirely. Without the Gemini key, only Tier 1 results will be returned, and ambiguous sequences will fall back to the alignment-only classification.
+> Both API keys are **required** for full pipeline functionality. Without the TypeSafe key, Tier 1 and Tier 2 are skipped and each record is reported with its k-mer alignment profile only. Without the Gemini key, ambiguous sequences keep their Tier 1 label and are marked `Tier 1 Fallback`.
 
 ---
 
@@ -313,47 +297,41 @@ gemini_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
 
 ### 10.1 Basic Usage
 
-1. Place your query FASTA file in the project directory (or update the `fasta_file` variable in `main()`).
-
-2. Edit line 181 of `jev sequence alignment.py` to point to your target file:
-   ```python
-   fasta_file = "gene.fasta"  # Change this to your FASTA filename
-   ```
-
-3. Run the pipeline:
+1. Run the pipeline with the path of your query FASTA file:
    ```bash
-   python3 "jev sequence alignment.py"
+   python3 "jev sequence alignment.py" jev-gp2-gene.fa
+   ```
+   With no argument the script reads `gene.fasta` from the project directory.
+
+2. Check the code without API keys or network access:
+   ```bash
+   python3 tests/test_pipeline.py
    ```
 
 ### 10.2 Example Output
 
-```
-Loaded 1 sequence(s) from raw FASTA file (HIV-gag-pol-gene.fna).
-Loaded 5 viral reference genome(s): JEV, SARS_COV_2, INFLUENZA_H5N1, POLIOVIRUS, HIV
+Real output of an offline run (no API keys set), 2026-11-19:
 
-=== General Viral Gene Annotator — Sequence Classification Summary ===
-Record: NP_057849.4                       | Action: Auto-Processed | Top Hit: HIV          | Confidence: 97.2%
-   ├─ Reference Alignment Match: JEV: 2.1%, SARS_COV_2: 1.8%, INFLUENZA_H5N1: 0.9%, POLIOVIRUS: 1.2%, HIV: 68.4%
-   └─ TypeSafe Viral Classification Probabilities: jev: 1.4%, sars_cov_2: 0.3%, influenza_h5n1: 0.1%, poliovirus: 0.2%, hiv: 97.8%, none: 0.2%
 ```
+$ python3 "jev sequence alignment.py"
+Loaded 1 sequence(s) from raw FASTA file (gene.fasta).
+Loaded 5 viral reference genome(s): HIV, SARS_COV_2, INFLUENZA_H5N1, POLIOVIRUS, JEV
+TYPESAFE_API_KEY not set (or SDK missing): reporting k-mer alignment only.
+
+=== General Viral Gene Annotator: Sequence Classification Summary ===
+Record: tralalalalalaallaalal             | Action: Alignment-Only (Tier 1 not configured) | Top Hit: HIV          | Confidence: n/a
+   ├─ Reference Alignment Match: HIV: 100.0%, SARS_COV_2: 0.0%, INFLUENZA_H5N1: 0.0%, POLIOVIRUS: 0.0%, JEV: 0.0%
+```
+
+With both keys set, each record also shows the Tier 1 confidence and class probabilities, and escalated records print the Tier 2 analysis text. An earlier version of this section showed illustrative scores (for example HIV 68.4%) that the code does not reproduce: the bundled queries are the reference genes themselves, so they score 100% on their own reference and 0% on the others.
 
 ### 10.3 Switching Query Files
 
-The script includes pre-configured file paths for all five reference pathogens. Uncomment the desired line in the `main()` function:
-
-```python
-# fasta_file = "jev_samples.fasta"       # JEV test samples
-# fasta_file = "HIV-gag-pol-gene.fna"    # HIV gag-pol gene
-# fasta_file = "sars-cov-2-orf1ab-gene.fna"  # SARS-CoV-2 ORF1ab gene
-# fasta_file = "Polio-PVgp1-gene.fna"    # Poliovirus PVgp1 gene
-# fasta_file = "H5N1-NA-gene.fna"        # Influenza H5N1 NA gene
-# fasta_file = "jev-gp2-gene.fa"         # JEV gp2 gene
-fasta_file = "gene.fasta"               # Default active file
-```
+Pass any of the bundled files as the argument: `jev_samples.fasta`, `HIV-gag-pol-gene.fna`, `sars-cov-2-orf1ab-gene.fna`, `Polio-PVgp1-gene.fna`, `H5N1-NA-gene.fna`, `jev-gp2-gene.fa`, or `gene.fasta`.
 
 ### 10.4 Using Your Own FASTA Sequences
 
-Place any standard FASTA file (`.fasta`, `.fna`, `.fa`) in the project directory and update the `fasta_file` variable. The parser supports:
+Place any standard FASTA file (`.fasta`, `.fna`, `.fa`) anywhere on disk and pass its path as the argument. The parser supports:
 - Single-sequence and multi-sequence FASTA files
 - Multiline sequence data (sequences split across multiple lines)
 - Standard FASTA header lines starting with `>`
@@ -464,6 +442,44 @@ except Exception as grok_err:
 > 2. Initialize the new client (replacing `gemini_client`).
 > 3. Set the corresponding API key as an environment variable.
 > 4. Update the `pip install` command to include the new provider's SDK.
+
+---
+
+## 12. Fundamental Improvements Over the Previous Version (2026-11-19)
+
+A code review of the whole repository on 2026-11-19 found defects that were hidden because the previous version could not start without two paid API keys and had no tests. The table lists what changed. Every row was checked offline by `tests/test_pipeline.py`, or by rerunning `scripts/robustness_kmer.py`, which reproduced `results/tables/*.csv` and Figure 2 byte for byte. The live Tier 1 and Tier 2 calls were not rerun, because they are paid external services.
+
+| Area | Previous version | This version |
+| :--- | :--- | :--- |
+| Start-up | Crashed with `KeyError` at import unless both API keys were set | Starts without keys; a missing key switches that tier off |
+| Offline use | A failed Tier 1 call discarded the k-mer profile and printed `Error / PENDING` | The k-mer profile and its top hit are always reported (`Alignment-Only`) |
+| No-hit queries | A query sharing no 15-mer with any reference was labelled `Top Alignment Hit: HIV (0.0%)`, and that label was sent to Tier 1 | Reported as `NONE`. Both synthetic controls in `jev_samples.fasta` were affected |
+| Tier 2 report | The Gemini analysis was requested, paid for, and never shown | Printed under the record; an empty reply counts as a failed escalation |
+| FASTA parsing | A record with a bare `>` header was dropped; sequence lines before the first header disappeared silently | The record is kept; headerless sequence raises an error |
+| Reference panel | A missing reference file shrank the panel without notice | A warning names the missing file |
+| Prompt safety | The FASTA header went into both model prompts unchanged | Header is cut to 120 printable characters and marked as untrusted text |
+| Large inputs | Every record was sent to the API at once | At most 8 records in flight (`MAX_CONCURRENT`); no retry yet |
+| Input selection | Query file fixed in the source code | Path given on the command line |
+| API keys | README suggested writing keys into the script | Environment variables only |
+| Tests | None | `tests/test_pipeline.py`, with both API tiers stubbed |
+| Environment | Unpinned | `environments/requirements.txt` |
+| Robustness script | Pulled functions out of the pipeline with `ast` and `exec`; self-check ran after the outputs were overwritten; fragment queries were scored against JEV only | Plain import; self-check runs first; fragments are scored against all five references and the cases where JEV is not the top hit are printed |
+| Manuscript QA | "Lipman ... 2018" satisfied the check for a "Li 2018" reference; "Chow (1970)" was flagged as uncited; crashed on a reference without a year; only ran from the project root | Word-boundary match, narrative citations accepted, surname particles checked, runs from any directory |
+| Manuscript build | A rerun overwrote the Word file, which had been edited by hand after the build | Text edits ported into the script; an existing file is kept unless `--force` is passed |
+| Figure 1 | Tier 1 box cited Eq. 4 for the confidence score | Cites Eq. 5, matching the manuscript |
+| Documentation | Escalation band given as 0.425 < p < 0.575; example scores not reproducible; diagram showed the older single-question design | Band corrected to 0.075 < p < 0.925; real output shown; diagram updated |
+
+What the new top-hit check showed: in the robustness simulation, 5 of the 50 fragments of 50 nt at 5% substitution, and 1 of the 500 full-length queries (at 30% substitution), lost every JEV 15-mer. With k = 15 and exact matching, short or divergent reads can drop out of the panel completely, and a single chance match to another reference can then become the top hit.
+
+Still open, because each one changes scores or statuses that the manuscript describes and therefore needs a decision by the author:
+
+1. Reverse-complement and RNA (U) input. The engine compares forward-strand DNA k-mers only, so a panel gene on the opposite strand scores 0%.
+2. Ambiguity codes (N, R, Y) are counted as ordinary k-mers.
+3. A minimum number of shared k-mers before a reference can be the top hit.
+4. A `Discordant` status for a confident Tier 1 label that contradicts the k-mer top hit.
+5. The Tier 1 results quoted in section 3.4 (94% rejection of the synthetic controls) come from the earlier JEV-only design and have not been rerun against the six-class panel.
+
+None of these changes alters the scope stated in section 7: every call remains a computational hypothesis to be confirmed by BLAST, RT-qPCR, or Sanger sequencing.
 
 ---
 
