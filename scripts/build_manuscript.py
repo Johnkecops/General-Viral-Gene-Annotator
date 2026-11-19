@@ -205,15 +205,13 @@ para("Annotation of viral gene sequences normally depends on remote database sea
      "an open pipeline that assigns a query FASTA sequence to one of five human viral pathogens: Japanese encephalitis "
      "virus (gp2), SARS-CoV-2 (ORF1ab), influenza A H5N1 (NA), poliovirus (PVgp1), and HIV-1 (gag-pol). Reference genes "
      "were retrieved once from NCBI Datasets and stored locally, so no database query is issued at run time. The "
-     "pipeline joins a deterministic step to a probabilistic one. A dependency-free Python k-mer engine (k = 15) "
-     "computes the fraction of unique query k-mers shared with each reference gene, which gives an inspectable "
+     "pipeline joins a deterministic step to a probabilistic one. A dependency-free Python k-mer engine (k = 15) computes, on both strands, the fraction of unique query k-mers shared with each reference gene, which gives an inspectable "
      "similarity profile. That profile, together with sequence length and a sequence preview, is passed to a "
      "constrained-choice probabilistic model (Tier 1) returning a class probability and a decision confidence of "
-     "2|p − 0.5|. Samples above a confidence of 0.85 are reported directly. Ambiguous samples escalate to a large "
+     "2|p − 0.5|. Samples above a confidence of 0.85 whose label agrees with the k-mer top hit are reported directly. Ambiguous or discordant samples escalate to a large "
      "language model (Tier 2) that reports homology, candidate recombination, and sequencing artefacts as narrative "
      "text, falling back to the Tier 1 call when that service is unreachable. Records run concurrently under asyncio. "
-     "Two behaviours are demonstrated. A 4,307 bp HIV-1 gag-pol gene carrying a nonsense FASTA header was classified "
-     "from sequence content alone, and synthetic tandem-repeat controls were rejected at roughly 94% confidence. "
+     "The k-mer step identified an HIV-1 gag-pol gene under a nonsense FASTA header from sequence alone, and of 1,200 simulated mutated or fragmented JEV queries it assigned none to another virus, leaving low-evidence queries unassigned. "
      "Thresholds remain computational heuristics, the panel is small, and no wet-laboratory calibration has been "
      "performed, so every call is a hypothesis for confirmation by BLAST, RT-qPCR, or Sanger sequencing. The source "
      "code is available at https://github.com/Johnkecops/General-Viral-Gene-Annotator.")
@@ -309,7 +307,7 @@ para("The similarity of a query *Q* to a reference *R* is the containment of the
      "The pipeline uses *k* = 15. There are 4^15^ ≈ 1.07 × 10^9^ possible 15-mers, so chance matches between unrelated "
      "viral genes of a few kilobases are rare, which is the same reasoning behind the k-mer lengths used by Mash and "
      "Kraken (Ondov et al., 2016; Wood et al., 2019). The best-matching reference is selected by Eq. (3), where *V* "
-     "is the set of five panel viruses.")
+     "is the set of five panel viruses. Before scoring, U is read as T, any k-mer that spans N or another ambiguity code is dropped, and Eq. (2) is evaluated for the query and for its reverse complement, keeping the larger value, so a gene submitted on the opposite strand is still recognised, in the same spirit as the canonical k-mers of Mash (Ondov et al., 2016). The top hit of Eq. (3) is reported only when that reference shares at least five distinct 15-mers with the query, and as none otherwise. The panel genes share no 15-mer with one another on either strand, and random sequences of 112 nt to 21 kb shared at most four with any panel gene, so the minimum sits just above the chance level seen for this panel.")
 equation([r("C"), delim([r("Q,R")]), r("="),
           frac([delim([*K("Q"), r("∩"), *K("R")], "|", "|")], [delim([*K("Q")], "|", "|")])], 2)
 equation([r("v̂"), r("="), m("func", m("fName", limlow([r("argmax", plain=True)], [r("v∈V")])),
@@ -319,8 +317,7 @@ para("Because every k-mer that contains a substituted base is lost, the expected
      "are ignored (Blanca et al., 2022). To test this behaviour, the JEVgp2 reference was mutated at rates from 0% "
      "to 30% with 50 replicates per rate and random seed 42, each substituted base changing to one of the other three "
      "with equal probability. Random fragments of 50 to 3,000 nt were also drawn at 0% and 5% substitution. Every "
-     "simulated query was scored against all five references with the pipeline's own compute_kmer_alignment "
-     "function, imported unchanged from the script.")
+     "simulated query was scored against all five references with the pipeline's own scoring functions, imported unchanged from the script, and its top hit was recorded under the five-k-mer minimum.")
 equation([r("E"), delim([r("C")], "[", "]"), r("≈"), ssup([delim([r("1−r")])], [r("k")])], 4)
 code_box("Pseudocode 1.", "FASTA parsing and k-mer containment scoring (native Python, no external libraries).", [
     "PROCEDURE PARSE_FASTA(file)",
@@ -335,11 +332,12 @@ code_box("Pseudocode 1.", "FASTA parsing and k-mer containment scoring (native P
     "  RETURN records",
     "",
     "PROCEDURE KMER_CONTAINMENT(Q, R, k = 15)",
-    "  Q ← UPPER(Q);  R ← UPPER(R)",
-    "  IF |Q| < k OR |R| < k THEN RETURN 0",
-    "  KQ ← { Q[i .. i+k−1] : i = 1 … |Q|−k+1 }          ▷ Eq. (1)",
-    "  KR ← { R[i .. i+k−1] : i = 1 … |R|−k+1 }",
-    "  RETURN |KQ ∩ KR| / |KQ|                            ▷ Eq. (2)",
+    "  Q ← UPPER(Q) with U read as T;  R ← UPPER(R)",
+    "  KQ ← { Q[i .. i+k−1] : i = 1 … |Q|−k+1 }, A/C/G/T only   ▷ Eq. (1)",
+    "  KQ' ← same for REVCOMP(Q);  KR ← same for R",
+    "  IF KQ = ∅ THEN RETURN (0, 0)",
+    "  s ← MAX(|KQ ∩ KR|, |KQ' ∩ KR|)",
+    "  RETURN (s, s / |KQ|)                                ▷ Eq. (2)",
 ])
 
 sub("Tier 1: constrained-choice classification")
@@ -349,17 +347,16 @@ para("The FASTA header, the containment profile, the sequence length and the fir
      "sars_cov_2, influenza_h5n1, poliovirus, hiv, or none (non-viral or synthetic). It returns the chosen label, a "
      "probability distribution over the six labels and a decision confidence. The project documentation defines "
      "confidence from the probability *p* of a call as in Eq. (5), so *p* = 0.5 gives γ = 0 and *p* = 0 or 1 gives "
-     "γ = 1; in the code the value is read directly from the SDK response. A call is accepted when γ reaches the "
-     "threshold τ = 0.85 (Eq. 6), which is a reject option in the sense of Chow (1970). Solving Eq. (5) for *p* "
+     "γ = 1; in the code the value is read directly from the SDK response. A call is accepted only when γ reaches the threshold τ = 0.85 and the chosen label ℓ agrees with the k-mer top hit v̂ of Eq. (3), as in Eq. (6), which is a reject option in the sense of Chow (1970). A confident label that contradicts v̂ is marked discordant and escalated, so the model cannot overrule the sequence evidence without a second look. Solving Eq. (5) for *p* "
      "shows that a record escalates whenever 0.075 < *p* < 0.925.")
 equation([r("γ"), r("="), r("2"), delim([r("p−0.5")], "|", "|")], 5)
 equation([r("call", plain=True), r("="), delim([eqarr(
-    [r("Auto-Processed,", plain=True), r("  γ≥τ")],
-    [r("Escalate to Tier 2,", plain=True), r("  γ<τ")])], "{", ""),
+    [r("Auto-Processed,", plain=True), r("  γ≥τ ∧ ℓ=v̂")],
+    [r("Escalate to Tier 2,", plain=True), r("  otherwise", plain=True)])], "{", ""),
     r(",   τ=0.85")], 6)
 
 sub("Tier 2: language model escalation, fallback and concurrency")
-para("Records below the threshold go to a large language model through the google-genai client, using the model "
+para("Records below the threshold, and discordant records, go to a large language model through the google-genai client, using the model "
      "identifier gemini-3.8-flash set in the script (Gemini Team, 2023). The system instruction frames the model as a "
      "viral genomics expert covering flaviviruses, coronaviruses, orthomyxoviruses, picornaviruses and retroviruses, "
      "and the prompt asks for homology, candidate recombination and anomalies given the bio_state block, with output "
@@ -368,25 +365,29 @@ para("Records below the threshold go to a large language model through the googl
      "stands. Because LLM text can contain confident errors (Ji et al., 2023), Tier 2 output is meant for a human "
      "reviewer. Pseudocode 2 summarises the triage of one record.")
 code_box("Pseudocode 2.", "Two-tier triage of a FASTA record and concurrent execution.", [
-    "PROCEDURE TRIAGE(record, panel, τ = 0.85)",
-    "  FOR each virus v IN panel DO  C[v] ← KMER_CONTAINMENT(record.seq, panel[v])",
-    "  v_top ← argmax_v C[v]                                        ▷ Eq. (3)",
+    "PROCEDURE TRIAGE(record, panel, τ = 0.85, m = 5)",
+    "  FOR each virus v IN panel DO",
+    "    (s[v], C[v]) ← KMER_CONTAINMENT(record.seq, panel[v])",
+    "  v_top ← argmax_v s[v];  IF s[v_top] < m THEN v_top ← none   ▷ Eq. (3)",
     "  state ← (record.id, v_top, C, |record.seq|, record.seq[1..300])",
     "  TRY",
     "    (label, P, γ) ← TIER1_CHOICE(state, {jev, sars_cov_2, influenza_h5n1,",
     "                                        poliovirus, hiv, none})",
-    "    IF γ ≥ τ THEN RETURN (label, γ, P, C, \"Auto-Processed\")    ▷ Eq. (6)",
-    "    TRY   text ← TIER2_LLM(state);  status ← \"Escalated to Gemini\"",
-    "    CATCH err:  text ← err;  status ← \"Tier 1 Fallback\"",
-    "    RETURN (label, γ, P, C, status, text)",
-    "  CATCH err:  RETURN (\"Error\", err)",
+    "  CATCH err:  RETURN (v_top, C, \"Alignment-Only\", err)",
+    "  IF γ ≥ τ AND label = v_top THEN                            ▷ Eq. (6)",
+    "    RETURN (label, γ, P, C, \"Auto-Processed\")",
+    "  TRY   text ← TIER2_LLM(state);  status ← \"Escalated to Gemini\"",
+    "  CATCH err:  text ← err;  status ← \"Tier 1 Fallback\"",
+    "  IF γ ≥ τ THEN status ← \"Discordant: \" + status",
+    "  RETURN (label, v_top, γ, P, C, status, text)",
     "",
-    "MAIN:  results ← AWAIT GATHER( TRIAGE(r, panel) FOR r IN PARSE_FASTA(query) )",
+    "MAIN:  results ← AWAIT GATHER( TRIAGE(r, panel) FOR r IN PARSE_FASTA(query) ),",
+    "       at most 8 records in flight",
 ])
-para("Each record runs as an asynchronous coroutine, and all records are awaited together with asyncio.gather, so "
+para("Each record runs as an asynchronous coroutine, and all records are awaited together with asyncio.gather, at most eight at a time, so "
      "network latency for one record does not hold up the others (Python Software Foundation, 2026). Figure 1 shows "
      "the complete workflow. The pipeline needs Python 3.10 or later with the packages google-genai, typesafe-sdk "
-     "and httpx, and it reads its API keys from the TYPESAFE_API_KEY and GEMINI_API_KEY environment variables. The "
+     "and httpx, and it reads its API keys from the TYPESAFE_API_KEY and GEMINI_API_KEY environment variables; without them it reports the k-mer profile alone. The "
      "codebase is deposited on GitHub and is being released as a Streamlit web application, so that users can "
      "upload FASTA files through a browser (Streamlit, 2026). The robustness simulation and figures in this paper "
      "were produced with Python 3.11.5, NumPy 1.26.4 and Matplotlib 3.8.2 (scripts/robustness_kmer.py and "
@@ -413,27 +414,21 @@ para("Table 2 lists the containment scores recomputed from the repository files.
      "expected for genes from five virus families that are unrelated at the nucleotide level (Zielezinski et al., "
      "2017). The header-blind file gene.fasta gave the same profile as the HIV-1 reference because its sequence is "
      "identical to it. Both tandem-repeat controls scored 0.000 against every reference; out of 98 overlapping "
-     "positions they contain only 23 and 22 distinct 15-mers, and none occurs in a panel gene (Broder, 1997). An "
-     "example output in the repository documentation shows off-target scores of 0.9% to 2.1% and an HIV-1 score of "
-     "68.4% for the same file, whereas the recomputation gives exactly 0% and 100%, so that example is illustrative "
-     "only.")
+     "positions they contain only 23 and 22 distinct 15-mers, and none occurs in a panel gene (Broder, 1997). Scoring both strands left every value in Table 2 unchanged. An earlier example output in the repository documentation showed off-target scores of 0.9% to 2.1% and an HIV-1 score of 68.4% for the same file, whereas the recomputation gives exactly 0% and 100%; the documentation now shows the recomputed output.")
 table("Table 2.", "k-mer containment C (k = 15) of each query against the five references, recomputed from the "
       "repository files.", ["Query", "Length (nt)", "HIV-1", "SARS-CoV-2", "H5N1", "PV", "JEV"], body,
       [5.6, 1.9, 1.6, 1.9, 1.6, 1.6, 1.6])
 para("For the Tier 1 layer, the project's recorded runs assigned the header-blind gene to HIV-1 and rejected both "
      "synthetic controls as non-JEV with *p* ≈ 0.03. Under Eq. (5) this gives γ = 2|0.03 − 0.5| = 0.94, above the "
      "0.85 threshold, so neither control reached Tier 2 (Chow, 1970). These Tier 1 values come from the project's run "
-     "records and were not re-executed for this paper, because the proprietary services require paid API keys "
-     "(TypeSafe AI, 2026).")
+     "records and were not re-executed for this paper, because the proprietary services require paid API keys (TypeSafe AI, 2026). They also predate the six-class panel: they come from an earlier version of Tier 1 that asked a single JEV or non-JEV question, so they illustrate the confidence rule of Eq. (5) and do not measure the six-class model described above.")
 para("Figure 2a shows the mean JEV containment of mutated full-length JEVgp2 queries. The simulated means followed "
      "Eq. (4) closely: 0.860 at 1% substitution (expected 0.860), 0.462 at 5% (0.463), 0.206 at 10% (0.206) and "
      "0.034 at 20% (0.035), in line with the k-mer survival model of Blanca et al. (2022). At 30% substitution the "
      "mean fell to 0.0045, and 1 of 50 replicates shared no 15-mer with the reference. The highest off-target score "
-     "among all 500 mutated queries was 0.0008, about 3 of roughly 3,580 query k-mers, so JEV stayed the top hit "
-     "whenever any JEV k-mer survived. Figure 2b shows that error-free fragments scored 1.000 at every length from 50 "
+     "among all 500 mutated queries was 0.0008, about 3 of roughly 3,580 query k-mers, so JEV had the highest score whenever any JEV k-mer survived. Figure 2b shows that error-free fragments scored 1.000 at every length from 50 "
      "to 3,000 nt. At 5% substitution the mean stayed near the expected 0.463 at all lengths, but the spread widened "
-     "as fragments shortened, from a standard deviation of 0.037 at 3,000 nt to 0.321 at 50 nt, and 5 of the 50 "
-     "fragments of 50 nt shared no 15-mer with the reference.")
+     "as fragments shortened, from a standard deviation of 0.037 at 3,000 nt to 0.321 at 50 nt, and 5 of the 50 fragments of 50 nt shared no 15-mer with the reference. With the five-k-mer minimum, none of the 1,200 simulated queries was assigned to another virus: 3 of the 50 replicates at 30% substitution and 9 of the 50 fragments of 50 nt at 5% substitution were reported as none, and the rest were assigned to JEV. Without the minimum, one replicate at 30% substitution that kept no JEV 15-mer but matched SARS-CoV-2 by chance would have been reported as SARS-CoV-2.")
 figure(os.path.join(ROOT, "results/figures/fig2_robustness.png"), 16.5, "Figure 2.",
        "Behaviour of the k = 15 containment score for simulated JEV queries (50 replicates per condition, seed 42). "
        "(a) Full-length JEVgp2 with uniform substitutions; the dashed line is Eq. (4). (b) Random fragments of the "
@@ -478,10 +473,8 @@ para("The Tier 1 model adds a label for inputs outside the panel, and the thresh
 para("The evaluation has clear limits. The test queries are the reference sequences themselves, so Table 2 confirms "
      "that the scoring works as coded; it does not estimate accuracy on new isolates. The threshold of 0.85 was set by "
      "hand and has not been calibrated against laboratory results. Eq. (5) maps a binary probability to confidence, "
-     "while the panel has six classes, and the SDK does not document how it computes the value it returns. The "
-     "repository documentation also gives the escalation band as 0.425 < *p* < 0.575, whereas Eq. (5) implies "
-     "0.075 < *p* < 0.925. Tiers 1 and 2 depend on proprietary services whose model versions can change, which "
-     "limits reproducibility (Gemini Team, 2023; TypeSafe AI, 2026).")
+     "while the panel has six classes, and the SDK does not document how it computes the value it returns. An earlier version of the repository documentation gave the escalation band as 0.425 < *p* < 0.575, whereas Eq. (5) implies "
+     "0.075 < *p* < 0.925; it has since been corrected. Tiers 1 and 2 depend on proprietary services whose model versions can change, which limits reproducibility (Gemini Team, 2023; TypeSafe AI, 2026). The minimum of five shared 15-mers is also empirical and fits a five-gene panel; larger panels or whole-genome queries raise the chance-match level and will need a length-aware threshold (Ondov et al., 2016).")
 para("Every call from the annotator should therefore be treated as a hypothesis. A positive JEV call on a clinical, "
      "veterinary or mosquito sample should be confirmed by BLAST against RefSeq, by a JEV-specific TaqMan RT-PCR "
      "(Pyke et al., 2004) and by Sanger sequencing. Typing and recombination claims from Tier 2 should be checked with "

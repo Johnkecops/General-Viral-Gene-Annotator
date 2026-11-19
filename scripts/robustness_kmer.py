@@ -23,6 +23,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location("pipeline", os.path.join(ROOT, "jev sequence alignment.py"))
 pipeline = importlib.util.module_from_spec(spec); spec.loader.exec_module(pipeline)
 parse_fasta, kmer = pipeline.parse_fasta, pipeline.compute_kmer_alignment
+# Top hit exactly as the pipeline reports it (most shared k-mers, best strand, "none" below MIN_SHARED_KMERS),
+# and the plain argmax it replaced (any shared k-mer wins), to show what the minimum changes.
+def top_hit(q):
+    shared = {v: pipeline.kmer_containment(q, s)[0] for v, s in refs.items()}
+    best = max(shared, key=shared.get)
+    return pipeline.top_alignment_hit(shared), (best if shared[best] > 0 else "none")
 refs = pipeline.load_reference_panel(ROOT)
 K, RATES, LENGTHS, REPS, SEED = 15, [0, .01, .02, .05, .08, .10, .15, .20, .25, .30], [50, 100, 150, 300, 500, 1000, 3000], 50, 42
 rng = random.Random(SEED)
@@ -47,22 +53,23 @@ with open(os.path.join(ROOT, "results/tables/containment_matrix.csv"), "w", newl
         w.writerow([f, i, len(s)] + [round(kmer(s, r) * 100, 1) for r in refs.values()])
 
 # 2. Substitution sweep on full JEVgp2
-sub = {r: [] for r in RATES}; off = []
+sub = {r: [] for r in RATES}; off = []; sub_hits = []
 for r in RATES:
     for _ in range(REPS):
         q = mutate(jev, r)
         sub[r].append(kmer(q, jev))
         off.append(max(kmer(q, s) for v, s in refs.items() if v != "jev"))
+        sub_hits.append((r, *top_hit(q)))
 # 3. Fragment-length sweep at 0% and 5% substitution
 frag = {e: {L: [] for L in LENGTHS} for e in (0.0, 0.05)}
-frag_off = []  # (rate, length, JEV score, best off-target score); scoring draws no random numbers, so the sweep is unchanged
+frag_off = []  # (rate, length, JEV score, best off-target score, top hit); scoring draws no random numbers
 for e in frag:
     for L in LENGTHS:
         for _ in range(REPS):
             st = rng.randrange(0, len(jev) - L + 1)
             q = mutate(jev[st:st + L], e)
             frag[e][L].append(kmer(q, jev))
-            frag_off.append((e, L, frag[e][L][-1], max(kmer(q, s) for v, s in refs.items() if v != "jev")))
+            frag_off.append((e, L, frag[e][L][-1], max(kmer(q, s) for v, s in refs.items() if v != "jev"), *top_hit(q)))
 
 with open(os.path.join(ROOT, "results/tables/robustness_summary.csv"), "w", newline="") as fh:
     w = csv.writer(fh); w.writerow(["experiment", "param", "mean", "sd", "min", "expected_(1-r)^k", "zero_score_fraction"])
@@ -91,14 +98,19 @@ ax[1].set_title("(b)", loc="left"); ax[1].legend(frameon=False, fontsize=7.5)
 for a in ax: a.spines[["top", "right"]].set_visible(False)
 fig.tight_layout(); fig.savefig(os.path.join(ROOT, "results/figures/fig2_robustness.png"))
 
-# Top-hit check for the claim that JEV stays the best reference: list every query where it does not.
-lost = [x for x in frag_off if x[3] >= x[2]]
-sub_flat = [c for r in RATES for c in sub[r]]
-print(f"substitution sweep: max off-target containment {max(off)}, "
-      f"JEV not strictly top in {sum(o >= c for c, o in zip(sub_flat, off))} of {len(off)}")
-print(f"fragment sweep: {len(frag_off)} queries, max off-target containment {max(x[3] for x in frag_off)}, "
-      f"JEV not strictly top in {len(lost)} (all-zero profiles: {sum(1 for x in lost if x[2] == 0 and x[3] == 0)})")
-for e, L in sorted({(x[0], x[1]) for x in lost}):
-    print(f"   rate {e}, length {L}: {sum(1 for x in lost if (x[0], x[1]) == (e, L))} of {REPS}")
-print(open(os.path.join(ROOT, "results/tables/containment_matrix.csv")).read())
-print(open(os.path.join(ROOT, "results/tables/robustness_summary.csv")).read())
+# Top-hit check: how often the reported top hit is JEV, "none" (abstain), or a wrong virus.
+def tally(rows):
+    out = {}
+    for key, hit in rows:
+        out.setdefault(key, {"jev": 0, "none": 0, "other": 0})[hit if hit in ("jev", "none") else "other"] += 1
+    return out
+print(f"substitution sweep: max off-target containment {max(off)}")
+for r, c in tally([(x[0], x[1]) for x in sub_hits]).items():
+    if c["jev"] < REPS: print(f"   rate {r}: top hit {c}")
+print(f"fragment sweep: {len(frag_off)} queries, max off-target containment {max(x[3] for x in frag_off)}")
+for (e, L), c in tally([((x[0], x[1]), x[4]) for x in frag_off]).items():
+    if c["jev"] < REPS: print(f"   rate {e}, length {L}: top hit {c}")
+for name, i, j in (("with", 1, 4), ("without", 2, 5)):
+    wrong = [x for x in sub_hits if x[i] not in ("jev", "none")] + [x for x in frag_off if x[j] not in ("jev", "none")]
+    print(f"wrong-virus top hits {name} the {pipeline.MIN_SHARED_KMERS}-k-mer minimum, "
+          f"{len(sub_hits) + len(frag_off)} simulated queries: {len(wrong)} {wrong}")

@@ -33,12 +33,12 @@ flowchart TD
         F --> G["Compute Probability & Confidence: |p - 0.5| * 2"]
     end
     
-    G --> H{"Confidence >= 85%?"}
+    G --> H{"Confidence >= 85% and label = k-mer top hit?"}
     
     H -- "Yes (Clear Decision)" --> I["Auto-Processed (class label)"]
     
     subgraph S2 ["Tier 2: Foundation Model Escalation"]
-        H -- "No (Ambiguous Variant)" --> J["Escalate to Gemini 3.8 Flash (gemini_client)"]
+        H -- "No (Ambiguous or Discordant)" --> J["Escalate to Gemini 3.8 Flash (gemini_client)"]
         J --> K["System Instruction: Viral Genomics Expert"]
         K --> L["Deep Anomaly & Recombination Analysis"]
     end
@@ -61,6 +61,13 @@ To accurately classify query sequences regardless of whether FASTA headers are b
 * `H5N1-NA-gene.fna` (Influenza A H5N1)
 * `Polio-PVgp1-gene.fna` (Poliovirus)
 * `jev-gp2-gene.fa` (Japanese Encephalitis Virus)
+
+Scoring rules (`kmer_containment`, `top_alignment_hit`):
+
+* Query and references are read in upper case, with U read as T, so RNA input works.
+* Any 15-mer that spans N or another IUPAC ambiguity code is skipped.
+* The query and its reverse complement are both scored and the larger overlap is kept, so a gene on the opposite strand is still recognised.
+* A reference becomes the top hit only if it shares at least `MIN_SHARED_KMERS = 5` distinct 15-mers with the query; otherwise the top hit is `NONE`. The panel genes share no 15-mer with each other on either strand, and random sequences of 112 nt to 21 kb shared at most 4 with any panel gene, so 5 sits just above chance for this panel. A larger panel or whole-genome queries will need a length-aware threshold.
 
 The computed alignment profile is integrated into `bio_state`, allowing TypeSafe's System One model to make decisive, biologically grounded classifications even on blind query files.
 
@@ -100,6 +107,10 @@ $$\text{Confidence} = |p - 0.5| \times 2$$
 * If $p = 0.0$ (certainly NOT JEV), $\text{Confidence} = 1.0$ (100%).
 
 ### 3.4 Why the Test Samples Were Auto-Processed at ~94% Confidence
+
+> [!NOTE]
+> This run used an earlier version of Tier 1 that asked one yes/no question (is this JEV?). It has not been repeated with the current six-class `Choice` panel, so treat the 94% figure as an illustration of the confidence formula, not as a measured result of the current model. The k-mer step, which runs offline, finds no 15-mer shared between either control and any reference.
+
 When running [`jev_samples.fasta`](jev_samples.fasta):
 * **`SAMPLE_01_AUST_GIII`**: `ATGCGACGTACGTAC...` (Artificial 4-mer tandem repeat: `(CGTA)n`).
 * **`SAMPLE_02_AMBIGUOUS_RECOMBINANT`**: `ATGGGGAAAGGGAAA...` (Artificial 6-mer tandem repeat: `(GGGAAA)n`).
@@ -469,15 +480,19 @@ A code review of the whole repository on 2026-11-19 found defects that were hidd
 | Figure 1 | Tier 1 box cited Eq. 4 for the confidence score | Cites Eq. 5, matching the manuscript |
 | Documentation | Escalation band given as 0.425 < p < 0.575; example scores not reproducible; diagram showed the older single-question design | Band corrected to 0.075 < p < 0.925; real output shown; diagram updated |
 
-What the new top-hit check showed: in the robustness simulation, 5 of the 50 fragments of 50 nt at 5% substitution, and 1 of the 500 full-length queries (at 30% substitution), lost every JEV 15-mer. With k = 15 and exact matching, short or divergent reads can drop out of the panel completely, and a single chance match to another reference can then become the top hit.
+### 12.1 Scoring and routing changes (second commit, 2026-11-19)
 
-Still open, because each one changes scores or statuses that the manuscript describes and therefore needs a decision by the author:
+These five changes alter what the pipeline reports, so the manuscript was updated with them (Methods, Pseudocode 1 and 2, Eq. 6, Figure 1, Results, Discussion, Abstract).
 
-1. Reverse-complement and RNA (U) input. The engine compares forward-strand DNA k-mers only, so a panel gene on the opposite strand scores 0%.
-2. Ambiguity codes (N, R, Y) are counted as ordinary k-mers.
-3. A minimum number of shared k-mers before a reference can be the top hit.
-4. A `Discordant` status for a confident Tier 1 label that contradicts the k-mer top hit.
-5. The Tier 1 results quoted in section 3.4 (94% rejection of the synthetic controls) come from the earlier JEV-only design and have not been rerun against the six-class panel.
+| Area | Previous version | This version |
+| :--- | :--- | :--- |
+| Strand and RNA | Forward-strand DNA only: the reverse complement of the JEV gene scored 0%, and the same gene written with U scored 3% | U read as T; both strands scored, larger overlap kept; both now score 100% |
+| Ambiguity codes | k-mers containing N, R, Y and so on were counted and could never match | Skipped, so an N in a read no longer lowers its score |
+| Top-hit rule | Any single shared 15-mer could make a reference the top hit | A reference needs at least 5 shared 15-mers, otherwise `NONE` |
+| Tier agreement | A confident Tier 1 label was accepted even when it contradicted the k-mer top hit | Accepted only when it agrees; otherwise the record is escalated and marked `Discordant` |
+| Tier 1 claims | Section 3.4 presented the 94% rejection as a result of the current model | Labelled as coming from the earlier one-question design, not rerun |
+
+Effect on the results: none of the numbers in `results/tables/` or Figure 2 changed (both CSVs and the figure were reproduced byte for byte). In the robustness simulation, the old rule would have called one 30%-substitution replicate SARS-CoV-2 from a single chance 15-mer match; with the 5-k-mer minimum, 0 of 1,200 simulated JEV queries go to another virus, and the low-evidence ones (3 of 50 at 30% substitution, 9 of 50 fragments of 50 nt at 5% substitution) are reported as `NONE`.
 
 None of these changes alters the scope stated in section 7: every call remains a computational hypothesis to be confirmed by BLAST, RT-qPCR, or Sanger sequencing.
 
